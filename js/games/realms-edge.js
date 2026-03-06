@@ -77,7 +77,7 @@ const RealmsEdge = (() => {
   const PCOLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12'];
 
   // Animation state — survives between renders so we can diff and drive effects
-  const _anim = { prevPos: {}, prevGold: {}, prevHp: {} };
+  const _anim = { prevPos: {}, prevGold: {}, prevHp: {}, prevPhase: null };
 
   // ────────────────────────────────────────────────────────────────────────────
   return {
@@ -431,27 +431,50 @@ const RealmsEdge = (() => {
         _anim.prevGold[p.id] = p.gold;
         _anim.prevHp[p.id]   = p.hp;
       });
+      const phaseChanged = _anim.prevPhase !== state.phase;
+      _anim.prevPhase = state.phase;
 
       container.innerHTML = '';
       container.style.position = 'relative';
       const isMyTurn = engine.playerId === state.currentPlayer;
       const me  = state.players.find(p => p.id === engine.playerId);
       const cur = state.players.find(p => p.id === state.currentPlayer);
+      const isMobile = window.matchMedia('(max-width:720px)').matches;
 
       const wrap = document.createElement('div');
       wrap.className = 're-wrap';
+      // On mobile default to 'side' when it's my turn, otherwise 'board'
+      wrap.dataset.tab = (isMobile && isMyTurn) ? 'side' : 'board';
       wrap.innerHTML = `
         <div class="re-layout">
           <div class="re-board-col">${this._svgBoard(state, engine)}</div>
           <div class="re-side-col">
-            ${this._renderPlayers(state, engine)}
             ${this._renderAction(state, engine, isMyTurn, me, cur)}
+            ${this._renderPlayers(state, engine)}
             ${this._renderLog(state)}
           </div>
+        </div>
+        <div class="re-tab-bar">
+          <button class="re-tab${wrap.dataset.tab === 'board' ? ' active' : ''}" data-re-tab="board">
+            <span class="re-ti">🗺</span>Board
+          </button>
+          <button class="re-tab${wrap.dataset.tab === 'side' ? ' active' : ''}${isMyTurn ? ' re-notify' : ''}" data-re-tab="side">
+            <span class="re-ti">⚔</span>Actions
+          </button>
         </div>
       `;
       container.appendChild(wrap);
       this._bindButtons(wrap, state, engine);
+
+      // Tab bar interactions
+      wrap.querySelectorAll('[data-re-tab]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.reTab;
+          wrap.dataset.tab = tab;
+          wrap.querySelectorAll('[data-re-tab]').forEach(b =>
+            b.classList.toggle('active', b.dataset.reTab === tab));
+        });
+      });
 
       // Fire animations after the DOM is painted
       setTimeout(() => {
@@ -470,6 +493,14 @@ const RealmsEdge = (() => {
             if (card) { card.classList.add('re-hp-flash'); setTimeout(() => card.classList.remove('re-hp-flash'), 700); }
           }
         });
+
+        // Sounds
+        if (posChanges.length) this._playSound('move');
+        if (goldChanges.some(g => g.diff > 0)) this._playSound('gold');
+        if (hpChanges.some(h => h.diff < 0)) this._playSound('hit');
+        if (phaseChanged && state.phase === 'GAME_OVER') this._playSound('win');
+        if (posChanges.length && BOARD[posChanges[0].player.position]?.type === 'CURSED')
+          this._playSound('curse');
 
         // Tile landing toast — fire after the move animation begins
         if (posChanges.length && state.phase !== 'CLASS_SELECT') {
@@ -527,7 +558,7 @@ const RealmsEdge = (() => {
           to   { opacity:0; transform:translate(-50%,-50%) scale(0.88) translateY(-16px); }
         }
         .re-tile-toast {
-          position:absolute; top:42%; left:50%;
+          position:fixed; top:45%; left:50%;
           transform:translate(-50%,-50%);
           z-index:600; min-width:270px; max-width:360px; width:90%;
           background:linear-gradient(150deg,#1c0e04,#2e1c08);
@@ -560,6 +591,47 @@ const RealmsEdge = (() => {
         .re-toast-bar { background:#2a1808; border-radius:4px; height:4px; overflow:hidden; }
         .re-toast-fill { height:100%; width:100%; background:var(--tc,#c9a227);
           border-radius:4px; transition:width 0s linear; }
+
+        /* ── Mobile tab bar ────────────────────────────────── */
+        .re-tab-bar {
+          display:none; grid-template-columns:1fr 1fr;
+          position:sticky; bottom:0; z-index:50;
+          background:#1a1208; border-top:1px solid #3d2e18;
+        }
+        .re-tab {
+          position:relative; padding:11px 8px; border:none;
+          background:transparent; color:#8a7558;
+          font-family:'Cinzel',serif; font-size:0.7rem; font-weight:600;
+          letter-spacing:.06em; cursor:pointer; transition:all .2s;
+          display:flex; flex-direction:column; align-items:center; gap:3px;
+        }
+        .re-tab .re-ti { font-size:1.3rem; line-height:1; }
+        .re-tab.active { color:#c9a227; background:#221a0e; }
+        .re-tab.re-notify::after {
+          content:''; position:absolute; top:8px; right:calc(50% - 16px);
+          width:8px; height:8px; border-radius:50%;
+          background:#e74c3c; animation:re-tab-pulse .9s infinite;
+        }
+        @keyframes re-tab-pulse { 0%,100%{opacity:1} 50%{opacity:0} }
+
+        @media (max-width:720px) {
+          .re-tab-bar { display:grid !important; }
+          .re-wrap { padding:0 !important; }
+          .re-layout { grid-template-columns:1fr !important; }
+          .re-board-col, .re-side-col { display:none !important; }
+          .re-wrap[data-tab="board"] .re-board-col { display:block !important; }
+          .re-wrap[data-tab="side"]  .re-side-col  { display:flex !important; flex-direction:column; }
+          .re-board-svg-wrap svg { max-height:calc(100dvh - 148px) !important; }
+          .re-side-col { padding:8px 8px 0; overflow-y:auto; max-height:calc(100dvh - 148px); }
+          .re-actions  { order:1; }
+          .re-players  { order:2; }
+          .re-log      { order:3; }
+          .re-actions h3 { font-size:0.95rem; margin-bottom:10px; }
+          .re-btn { padding:14px !important; font-size:0.88rem !important; min-height:52px; }
+          .re-class-grid { grid-template-columns:1fr 1fr !important; gap:10px !important; }
+          .re-class-btn { padding:16px 8px !important; min-height:88px; }
+          .re-class-btn .re-cb-icon { font-size:2rem; }
+        }
       `;
       document.head.appendChild(s);
     },
@@ -625,6 +697,69 @@ const RealmsEdge = (() => {
         fill.style.width = '0%';
       }, 60);
       setTimeout(dismiss, DURATION + 80);
+    },
+
+    // ── Audio feedback (Web Audio API — no external files) ───────────────────────
+    _playSound(type) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const t = ctx.currentTime;
+        const end = () => setTimeout(() => ctx.close(), 1500);
+
+        const osc = (freq, waveType, start, dur, gainPeak, freqEnd) => {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.connect(g); g.connect(ctx.destination);
+          o.type = waveType || 'sine';
+          o.frequency.setValueAtTime(freq, t + start);
+          if (freqEnd) o.frequency.exponentialRampToValueAtTime(freqEnd, t + start + dur);
+          g.gain.setValueAtTime(gainPeak, t + start);
+          g.gain.exponentialRampToValueAtTime(0.001, t + start + dur);
+          o.start(t + start); o.stop(t + start + dur + 0.01);
+        };
+
+        switch(type) {
+          case 'move':
+            osc(320, 'sine', 0, 0.18, 0.08, 520); end(); break;
+
+          case 'dice':
+            for (let i = 0; i < 4; i++)
+              osc(150 + Math.random()*250, 'square', i*0.07, 0.06, 0.12);
+            end(); break;
+
+          case 'gold': {
+            osc(880, 'sine', 0,    0.12, 0.18, 1320);
+            osc(1320,'sine', 0.1,  0.2,  0.12, 880);
+            osc(1760,'sine', 0.18, 0.3,  0.08);
+            end(); break;
+          }
+
+          case 'hit': {
+            // Noise burst
+            const bufSize = Math.floor(ctx.sampleRate * 0.12);
+            const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+            const data = buf.getChannelData(0);
+            for (let i = 0; i < bufSize; i++) data[i] = (Math.random()*2-1) * Math.pow(1 - i/bufSize, 2);
+            const src = ctx.createBufferSource();
+            src.buffer = buf;
+            const flt = ctx.createBiquadFilter(); flt.type = 'bandpass'; flt.frequency.value = 380;
+            const g = ctx.createGain(); g.gain.value = 0.5;
+            src.connect(flt); flt.connect(g); g.connect(ctx.destination);
+            src.start(t); end(); break;
+          }
+
+          case 'curse':
+            osc(280, 'sawtooth', 0, 0.55, 0.13, 70);
+            osc(140, 'sawtooth', 0.1, 0.45, 0.08, 55);
+            end(); break;
+
+          case 'win': {
+            const melody = [523, 659, 784, 659, 1047];
+            melody.forEach((f, i) => osc(f, 'triangle', i*0.13, 0.22, 0.18));
+            end(); break;
+          }
+        }
+      } catch(e) { /* AudioContext unavailable — silent fail */ }
     },
 
     // ── Token move animation (step-by-step along the ring) ───────────────────────
