@@ -135,7 +135,7 @@ function renderHostPlayerList() {
   ul.innerHTML = hostPlayers.map((p, i) => `
     <li>
       <span class="player-dot" style="background:${PLAYER_COLORS[i]}"></span>
-      ${p.name} ${p.isHost ? '<span style="font-size:0.75rem;color:var(--text-dim)">(you, host)</span>' : ''}
+      ${p.name}${p.isHost ? ' <span style="font-size:0.75rem;color:var(--text-dim)">(you)</span>' : ''}
     </li>
   `).join('');
 }
@@ -144,7 +144,7 @@ function updateStartButton() {
   const btn = document.getElementById('btn-start');
   const status = document.getElementById('start-status');
   btn.disabled = false;
-  status.textContent = 'Share the link above, then start when ready. Others join from play.html.';
+  status.textContent = 'Share the link above. Friends can join once you click Start Game.';
   sessionStorage.setItem('bge_players', JSON.stringify(hostPlayers));
 }
 
