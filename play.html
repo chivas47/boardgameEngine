@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Board Game Engine — Play</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
+</head>
+<body>
+
+<div class="game-page" id="game-page">
+
+  <!-- Header -->
+  <header class="game-header">
+    <div>
+      <span class="game-header-title" id="game-title">⚔ Board Game Engine</span>
+      <span class="header-status" id="header-status" style="margin-left:12px"></span>
+    </div>
+    <div class="header-players" id="header-players"></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button onclick="copyRoomLink()" style="background:var(--bg-panel);border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:0.78rem;font-family:'Cinzel',serif" title="Copy room link">📋 Invite</button>
+      <a href="index.html" style="color:var(--text-muted);font-size:0.78rem;text-decoration:none">← Lobby</a>
+    </div>
+  </header>
+
+  <!-- Loading state -->
+  <div id="loading-screen" class="loading">
+    <div class="spinner"></div>
+    <div id="loading-msg">Connecting…</div>
+  </div>
+
+  <!-- Game container -->
+  <div id="game-container" style="display:none"></div>
+
+  <!-- Chat bar -->
+  <div class="chat-panel" id="chat-panel" style="display:none">
+    <div class="chat-log" id="chat-log" style="flex:1;max-height:60px;overflow-y:auto"></div>
+    <input type="text" class="chat-input" id="chat-input" placeholder="Chat…" maxlength="120" onkeydown="if(event.key==='Enter')sendChat()">
+    <button class="chat-send" onclick="sendChat()">Send</button>
+  </div>
+
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/network.js"></script>
+<script src="js/games/territory-wars.js"></script>
+<script src="js/games/realms-edge.js"></script>
+
+<script>
+// ── Parse URL params + sessionStorage ────────────────────────────────────────
+const params = new URLSearchParams(location.search);
+const roomId  = params.get('room');
+const gameId  = params.get('game') || sessionStorage.getItem('bge_game') || 'territory-wars';
+const isHost  = params.get('host') === '1' || sessionStorage.getItem('bge_host') === '1';
+const myName  = sessionStorage.getItem('bge_name') || 'Player';
+const storedPlayers = JSON.parse(sessionStorage.getItem('bge_players') || 'null');
+
+const game = window.GAMES[gameId];
+if (!game) {
+  document.getElementById('loading-msg').textContent = `Unknown game: ${gameId}`;
+  throw new Error('Unknown game');
+}
+
+document.getElementById('game-title').textContent = `⚔ ${game.name}`;
+document.title = `${game.name} — Board Game Engine`;
+
+// ── Network & Engine ─────────────────────────────────────────────────────────
+let network = null;
+let engine  = null;
+let myPlayerId = null;
+let allPlayers = []; // list of {id, name, color}
+
+const PLAYER_COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12'];
+
+function setLoading(msg) {
+  document.getElementById('loading-msg').textContent = msg;
+}
+
+function hideLoading() {
+  document.getElementById('loading-screen').style.display = 'none';
+  document.getElementById('game-container').style.display = 'block';
+  document.getElementById('chat-panel').style.display = 'flex';
+}
+
+function setHeaderStatus(msg, color = 'var(--text-dim)') {
+  const el = document.getElementById('header-status');
+  el.textContent = msg;
+  el.style.color = color;
+}
+
+function renderHeaderPlayers() {
+  document.getElementById('header-players').innerHTML = allPlayers.map((p, i) => `
+    <span style="font-size:0.78rem;font-family:'Cinzel',serif;color:${p.color || PLAYER_COLORS[i]};padding:3px 10px;border:1px solid ${p.color || PLAYER_COLORS[i]}40;border-radius:20px">
+      ${p.name}${p.id === myPlayerId ? ' (you)' : ''}
+    </span>
+  `).join('');
+}
+
+// ── Chat ─────────────────────────────────────────────────────────────────────
+function sendChat() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  network.sendChat(text, myName);
+  input.value = '';
+}
+
+function appendChat(senderName, text) {
+  const log = document.getElementById('chat-log');
+  const line = document.createElement('div');
+  line.className = 'chat-line';
+  line.innerHTML = `<strong>${senderName}:</strong> ${text}`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+async function init() {
+  if (!roomId) {
+    setLoading('No room ID. Go back to lobby.');
+    return;
+  }
+
+  network = new P2PNetwork();
+
+  // Chat handler
+  network.onMessage = (msg, fromId) => {
+    if (msg.type === 'CHAT') {
+      appendChat(msg.senderName, msg.text);
+      // If host, forward to others
+      if (isHost) network.broadcast(msg);
+    }
+  };
+
+  if (isHost) {
+    setLoading('Setting up room…');
+    try {
+      const hostId = await network.createRoom(myName, roomId);
+      myPlayerId = hostId;
+      allPlayers = (storedPlayers || [{ id: hostId, name: myName }]).map((p, i) => ({
+        ...p,
+        id: p.id === storedPlayers?.[0]?.id ? hostId : p.id,
+        color: PLAYER_COLORS[i]
+      }));
+      allPlayers[0].id = hostId; // ensure host id matches peer id
+      renderHeaderPlayers();
+      setHeaderStatus('Hosting · Room ' + hostId.slice(0,8) + '…', 'var(--gold)');
+
+      // Start game immediately (players already accepted in lobby)
+      startGame(allPlayers);
+
+      // Handle late joiners: send state
+      network.onPlayerJoined = (p) => {
+        setHeaderStatus(`${p.name} joined`, 'var(--green)');
+        setTimeout(() => setHeaderStatus('Hosting', 'var(--gold)'), 3000);
+        if (engine?.state) {
+          network.sendTo(p.peerId, { type: 'STATE_UPDATE', state: engine.state });
+        }
+      };
+
+      // Re-route chat broadcasting
+      const origOnMsg = network.onMessage;
+      network.onMessage = (msg, fromId) => {
+        if (msg.type === 'ACTION' && engine) {
+          engine._processAction(msg.action);
+        } else if (msg.type === 'CHAT') {
+          appendChat(msg.senderName, msg.text);
+          network.broadcast(msg);
+        } else {
+          origOnMsg?.(msg, fromId);
+        }
+      };
+
+    } catch(e) {
+      setLoading('Failed to create room: ' + e.message);
+    }
+
+  } else {
+    // Guest
+    setLoading('Connecting to room…');
+    try {
+      const myId = await network.joinRoom(roomId, myName);
+      myPlayerId = myId;
+      setHeaderStatus('Connected · Room ' + roomId.slice(0,8) + '…', 'var(--green)');
+
+      network.onMessage = (msg, fromId) => {
+        if (msg.type === 'STATE_UPDATE' || msg.type === 'GAME_OVER') {
+          if (!engine) {
+            // First state: figure out my player id from state
+            const state = msg.state;
+            const me = state.players.find(p => p.name === myName) || state.players.find(p => !p.id?.includes(roomId));
+            // Best guess: match by position (guest is likely player[1])
+            myPlayerId = state.players.find(p => p.id !== roomId)?.id || myId;
+            startGame(state.players, state);
+          } else {
+            engine._handleNetworkMessage(msg, fromId);
+          }
+        } else if (msg.type === 'CHAT') {
+          appendChat(msg.senderName, msg.text);
+        }
+      };
+
+      // Override sendToHost in engine
+    } catch(e) {
+      setLoading('Could not connect. Room may not exist or host left.');
+    }
+  }
+}
+
+function startGame(players, existingState = null) {
+  allPlayers = players;
+  renderHeaderPlayers();
+  hideLoading();
+
+  const container = document.getElementById('game-container');
+
+  // Find my player id that matches a player
+  // For host: myPlayerId = roomId (PeerJS id)
+  // For guest: need to figure out which player slot
+  const matchedPlayer = players.find(p => p.id === myPlayerId || p.name === myName);
+  const effectiveId = matchedPlayer?.id || players[0]?.id;
+
+  engine = new BoardGameEngine({
+    game,
+    network,
+    container,
+    playerId: effectiveId,
+    isHost
+  });
+
+  engine.on('log', entry => {
+    if (engine.state) {
+      engine.state.log = engine.state.log || [];
+      engine.state.log.push(entry.msg);
+    }
+  });
+
+  engine.on('gameover', winner => {
+    setHeaderStatus(`🏆 ${winner?.name} wins!`, 'var(--gold)');
+  });
+
+  engine.on('invalid-action', result => {
+    setHeaderStatus(result.reason || 'Invalid action', 'var(--red)');
+    setTimeout(() => setHeaderStatus(''), 2000);
+  });
+
+  if (isHost && !existingState) {
+    engine.startGame(players);
+  } else if (existingState) {
+    engine.state = existingState;
+    engine.forceRender();
+  }
+}
+
+function copyRoomLink() {
+  const link = `${location.origin}${location.pathname.replace('play.html','index.html')}?room=${roomId}&game=${gameId}`;
+  navigator.clipboard.writeText(link).then(() => {
+    setHeaderStatus('Link copied!', 'var(--green)');
+    setTimeout(() => setHeaderStatus(''), 2000);
+  });
+}
+
+init();
+</script>
+</body>
+</html>
