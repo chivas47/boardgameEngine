@@ -180,6 +180,7 @@ async function init() {
   } else {
     // Guest
     setLoading('Connecting to room…');
+    network.onRetry = (attempt, max) => setLoading(`Connecting… (attempt ${attempt}/${max})`);
     try {
       const myId = await network.joinRoom(roomId, myName);
       myPlayerId = myId;

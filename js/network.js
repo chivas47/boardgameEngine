@@ -78,13 +78,21 @@ class P2PNetwork {
   // ── Guest ─────────────────────────────────────────────────────────────────
 
   joinRoom(roomId, playerName) {
+    const MAX_ATTEMPTS = 6;
+    const RETRY_DELAY  = 2500;
+
     return new Promise((resolve, reject) => {
       this.isHost = false;
       this.roomId = roomId;
       this.peer = new Peer(undefined, { debug: 1 });
 
-      this.peer.on('open', myId => {
-        this.myId = myId;
+      let attempts = 0;
+      let settled  = false;
+
+      const tryConnect = () => {
+        attempts++;
+        this.onRetry?.(attempts, MAX_ATTEMPTS);
+
         const conn = this.peer.connect(roomId, {
           metadata: { name: playerName },
           reliable: true
@@ -92,31 +100,52 @@ class P2PNetwork {
         this._hostConn = conn;
 
         conn.on('open', () => {
-          conn.on('data', data => {
-            this.onMessage?.(data, roomId);
-          });
-          conn.on('close', () => {
-            this.onPlayerLeft?.({ peerId: roomId, isHost: true });
-          });
+          settled = true;
+          conn.on('data',  data => this.onMessage?.(data, roomId));
+          conn.on('close', ()   => this.onPlayerLeft?.({ peerId: roomId, isHost: true }));
           this.onConnected?.();
-          resolve(myId);
+          resolve(this.myId);
         });
 
+        // conn-level errors (not peer-unavailable)
         conn.on('error', err => {
-          console.error('Host conn error:', err);
-          reject(err);
-          this.onError?.(err);
+          if (settled) return;
+          console.warn('Host conn error:', err);
+          if (attempts < MAX_ATTEMPTS) {
+            setTimeout(tryConnect, RETRY_DELAY);
+          } else {
+            settled = true;
+            reject(err);
+            this.onError?.(err);
+          }
         });
+      };
+
+      this.peer.on('open', myId => {
+        this.myId = myId;
+        tryConnect();
       });
 
       this.peer.on('error', err => {
-        console.error('PeerJS error:', err);
-        reject(err);
-        this.onError?.(err);
+        if (settled) return;
+        if (err.type === 'peer-unavailable' && attempts < MAX_ATTEMPTS) {
+          console.warn(`PeerJS: host not found, retry ${attempts}/${MAX_ATTEMPTS}…`);
+          setTimeout(tryConnect, RETRY_DELAY);
+        } else {
+          console.error('PeerJS error:', err);
+          settled = true;
+          reject(err);
+          this.onError?.(err);
+        }
       });
 
-      // Timeout
-      setTimeout(() => reject(new Error('Connection timed out')), 15000);
+      // Hard timeout covers MAX_ATTEMPTS * RETRY_DELAY + some margin
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error('Connection timed out'));
+        }
+      }, MAX_ATTEMPTS * RETRY_DELAY + 10000);
     });
   }
 
