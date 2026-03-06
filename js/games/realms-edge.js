@@ -13,8 +13,8 @@ const RealmsEdge = (() => {
   // ── Constants ───────────────────────────────────────────────────────────────
   const N = 24;
   const WIN_GOLD = 100;
-  const CX = 400, CY = 385, R = 270; // SVG board center + radius
-  const SVG_W = 800, SVG_H = 760;
+  const CX = 460, CY = 445, R = 330; // SVG board center + radius
+  const SVG_W = 940, SVG_H = 900;
 
   // ── Hero Classes ─────────────────────────────────────────────────────────────
   const CLASSES = {
@@ -470,6 +470,13 @@ const RealmsEdge = (() => {
             if (card) { card.classList.add('re-hp-flash'); setTimeout(() => card.classList.remove('re-hp-flash'), 700); }
           }
         });
+
+        // Tile landing toast — fire after the move animation begins
+        if (posChanges.length && state.phase !== 'CLASS_SELECT') {
+          const { player } = posChanges[0];
+          const tile = BOARD[player.position];
+          setTimeout(() => this._showTileToast(container, tile, player, state), 380);
+        }
       }, 0);
 
       if (state.phase === 'GAME_OVER') {
@@ -510,8 +517,114 @@ const RealmsEdge = (() => {
         .re-class-btn:hover { border-color:#c9a227;background:#2a1e08;transform:translateY(-3px);
           box-shadow:0 5px 14px #c9a22755; }
         .re-barfill { transition: width 0.5s ease; }
+
+        @keyframes re-toast-in {
+          from { opacity:0; transform:translate(-50%,-50%) scale(0.72); }
+          to   { opacity:1; transform:translate(-50%,-50%) scale(1); }
+        }
+        @keyframes re-toast-out {
+          from { opacity:1; transform:translate(-50%,-50%) scale(1); }
+          to   { opacity:0; transform:translate(-50%,-50%) scale(0.88) translateY(-16px); }
+        }
+        .re-tile-toast {
+          position:absolute; top:42%; left:50%;
+          transform:translate(-50%,-50%);
+          z-index:600; min-width:270px; max-width:360px; width:90%;
+          background:linear-gradient(150deg,#1c0e04,#2e1c08);
+          border:2px solid var(--tc,#c9a227);
+          border-radius:18px; padding:24px 26px 16px;
+          text-align:center;
+          box-shadow:0 0 60px var(--tc,#c9a227)55, 0 30px 70px #000d;
+          animation:re-toast-in .4s cubic-bezier(.175,.885,.32,1.275) forwards;
+          pointer-events:auto;
+        }
+        .re-tile-toast.closing {
+          animation:re-toast-out .35s ease forwards;
+        }
+        .re-toast-x {
+          position:absolute; top:10px; right:14px;
+          background:none; border:none;
+          color:var(--tc,#c9a227); font-size:0.9rem;
+          cursor:pointer; opacity:.6; transition:opacity .15s;
+        }
+        .re-toast-x:hover { opacity:1; }
+        .re-toast-icon { font-size:3.2rem; line-height:1; margin-bottom:10px;
+          filter:drop-shadow(0 0 14px var(--tc,#c9a227)); }
+        .re-toast-player { font-family:'Cinzel',serif; font-size:0.82rem;
+          font-weight:700; margin-bottom:2px; }
+        .re-toast-tile { font-family:'Cinzel',serif; font-size:1.15rem;
+          color:#ede0c0; font-weight:600; margin-bottom:10px; letter-spacing:.04em; }
+        .re-toast-detail { font-size:0.78rem; color:#a08060; margin-bottom:8px; line-height:1.45; }
+        .re-toast-log { font-size:0.72rem; color:#6a5030; margin:8px 0 14px;
+          border-top:1px solid #3d2e1844; padding-top:8px; line-height:1.5; }
+        .re-toast-bar { background:#2a1808; border-radius:4px; height:4px; overflow:hidden; }
+        .re-toast-fill { height:100%; width:100%; background:var(--tc,#c9a227);
+          border-radius:4px; transition:width 0s linear; }
       `;
       document.head.appendChild(s);
+    },
+
+    // ── Tile landing toast popup ──────────────────────────────────────────────────
+    _showTileToast(container, tile, player, state) {
+      container.querySelectorAll('.re-tile-toast').forEach(t => t.remove());
+
+      const colorMap = {
+        MONSTER: '#e74c3c', TREASURE: '#d4a820', START: '#f39c12',
+        EVENT: '#8e44ad', TAVERN: '#c47c2a', CURSED: '#7f8c8d',
+        QUEST: '#c0392b', TOWN: '#2980b9',
+      };
+      const color = colorMap[tile.type] || '#c9a227';
+
+      let icon = tile.icon;
+      let detail = '';
+      if (tile.type === 'MONSTER' && state.encounter) {
+        const m = state.encounter;
+        icon = m.icon;
+        detail = `<div class="re-toast-detail">${m.name} &nbsp;·&nbsp; HP ${m.hp} &nbsp;·&nbsp; ATK ${m.atk} &nbsp;·&nbsp; <span style="color:#d4a820">${m.reward}g</span> reward</div>`;
+      } else if (tile.type === 'TREASURE') {
+        detail = `<div class="re-toast-detail">Search the chest for riches!</div>`;
+      } else if (tile.type === 'QUEST' && state.encounter) {
+        detail = `<div class="re-toast-detail">Roll 4+ to earn <span style="color:#d4a820">${state.encounter.reward}g</span></div>`;
+      } else if (tile.type === 'TAVERN') {
+        detail = `<div class="re-toast-detail">Rest and recover your wounds</div>`;
+      } else if (tile.type === 'TOWN') {
+        detail = `<div class="re-toast-detail">Upgrade your weapons and armor</div>`;
+      } else if (tile.type === 'START') {
+        detail = `<div class="re-toast-detail">+5 gold &nbsp;·&nbsp; +3 HP</div>`;
+      }
+
+      const lastLog = (state.log || []).slice(-1)[0] || '';
+
+      const toast = document.createElement('div');
+      toast.className = 're-tile-toast';
+      toast.style.setProperty('--tc', color);
+      toast.innerHTML = `
+        <button class="re-toast-x">✕</button>
+        <div class="re-toast-icon">${icon}</div>
+        <div class="re-toast-player" style="color:${player.color}">${player.classIcon || ''} ${player.name}</div>
+        <div class="re-toast-tile">${tile.name}</div>
+        ${detail}
+        <div class="re-toast-log">${lastLog}</div>
+        <div class="re-toast-bar"><div class="re-toast-fill"></div></div>
+      `;
+      container.appendChild(toast);
+
+      const dismiss = () => {
+        if (!toast.isConnected) return;
+        toast.classList.add('closing');
+        setTimeout(() => toast.remove(), 360);
+      };
+
+      toast.querySelector('.re-toast-x').addEventListener('click', dismiss);
+
+      // Start the drain bar
+      const fill = toast.querySelector('.re-toast-fill');
+      const DURATION = 3800;
+      setTimeout(() => {
+        fill.style.transitionDuration = DURATION + 'ms';
+        fill.style.width = '0%';
+      }, 60);
+      setTimeout(dismiss, DURATION + 80);
     },
 
     // ── Token move animation (step-by-step along the ring) ───────────────────────
@@ -528,8 +641,8 @@ const RealmsEdge = (() => {
         <text y="4" text-anchor="middle" font-size="9" fill="white"
           font-family="Cinzel,serif" font-weight="bold">${player.name[0]}</text>`;
       g.style.cssText = `
-        transform: translate(${startPt.x}px, ${startPt.y + 24}px);
-        filter: drop-shadow(0 0 8px ${player.color});
+        transform: translate(${startPt.x}px, ${startPt.y + 28}px);
+        filter: drop-shadow(0 0 10px ${player.color});
         transition: transform 75ms linear;
         will-change: transform;`;
       svg.appendChild(g);
@@ -539,7 +652,7 @@ const RealmsEdge = (() => {
       const nextStep = () => {
         if (idx >= steps.length) { setTimeout(() => g.remove(), 90); return; }
         const pt = steps[idx++];
-        g.style.transform = `translate(${pt.x}px, ${pt.y + 24}px)`;
+        g.style.transform = `translate(${pt.x}px, ${pt.y + 28}px)`;
         setTimeout(nextStep, 82);
       };
       setTimeout(nextStep, 0);
@@ -571,7 +684,7 @@ const RealmsEdge = (() => {
       state.players.forEach(p => { (byPos[p.position] = byPos[p.position] || []).push(p); });
 
       const pathPts = positions.map((pos, i) => `${i ? 'L' : 'M'}${pos.x} ${pos.y}`).join(' ') + 'Z';
-      const sz = 44;
+      const sz = 60;
 
       const tiles = positions.map((pos, i) => {
         const tile = BOARD[i];
@@ -579,26 +692,26 @@ const RealmsEdge = (() => {
         const isActiveTile = players.some(p => p.id === state.currentPlayer);
 
         const tokens = players.map((p, pi) => {
-          const ox = (pi - (players.length - 1) / 2) * 17;
+          const ox = (pi - (players.length - 1) / 2) * 18;
           return `
-            <circle cx="${pos.x+ox}" cy="${pos.y+26}" r="9" fill="${p.color}"
-              stroke="white" stroke-width="1.5" style="filter:drop-shadow(0 0 4px ${p.color})"/>
-            <text x="${pos.x+ox}" y="${pos.y+30}" text-anchor="middle"
-              font-size="8.5" fill="white" font-family="Cinzel,serif" font-weight="bold">${p.name[0]}</text>`;
+            <circle cx="${pos.x+ox}" cy="${pos.y+28}" r="11" fill="${p.color}"
+              stroke="white" stroke-width="2" style="filter:drop-shadow(0 0 5px ${p.color})"/>
+            <text x="${pos.x+ox}" y="${pos.y+33}" text-anchor="middle"
+              font-size="9" fill="white" font-family="Cinzel,serif" font-weight="bold">${p.name[0]}</text>`;
         }).join('');
 
         const glow = isActiveTile ? `
           <circle cx="${pos.x}" cy="${pos.y}" r="${sz/2+10}" fill="none"
-            stroke="#f0c040" stroke-width="2" stroke-dasharray="5,3" opacity="0.9">
+            stroke="#f0c040" stroke-width="2.5" stroke-dasharray="6,3" opacity="0.9">
             <animateTransform attributeName="transform" type="rotate"
-              from="0 ${pos.x} ${pos.y}" to="360 ${pos.x} ${pos.y}" dur="7s" repeatCount="indefinite"/>
+              from="0 ${pos.x} ${pos.y}" to="360 ${pos.x} ${pos.y}" dur="6s" repeatCount="indefinite"/>
           </circle>` : '';
 
         return `<g class="re-tile">
           ${glow}
-          <rect x="${pos.x-sz/2}" y="${pos.y-sz/2}" width="${sz}" height="${sz}" rx="9"
-            fill="${tile.color}22" stroke="${tile.color}" stroke-width="${i===0?2.8:1.8}"/>
-          <text x="${pos.x}" y="${pos.y+8}" text-anchor="middle" font-size="20">${tile.icon}</text>
+          <rect x="${pos.x-sz/2}" y="${pos.y-sz/2}" width="${sz}" height="${sz}" rx="11"
+            fill="${tile.color}22" stroke="${tile.color}" stroke-width="${i===0?3:2}"/>
+          <text x="${pos.x}" y="${pos.y+9}" text-anchor="middle" font-size="22">${tile.icon}</text>
           ${tokens}
         </g>`;
       }).join('');
@@ -606,7 +719,7 @@ const RealmsEdge = (() => {
       const center = this._svgCenter(state, W, H);
 
       return `<div class="re-board-svg-wrap"><svg viewBox="0 0 ${W} ${H}"
-        xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:660px">
+        xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:780px">
         <defs>
           <radialGradient id="reBg" cx="50%" cy="50%">
             <stop offset="0%"   stop-color="#143d25" stop-opacity="0.97"/>
@@ -621,7 +734,7 @@ const RealmsEdge = (() => {
 
     _svgCenter(state, W, H) {
       const x = CX, y = CY - 10;
-      const bw = 270, bh = 200;
+      const bw = 300, bh = 220;
       const bx = x - bw/2, by = y - bh/2;
       let inner = '';
 
