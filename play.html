@@ -30,6 +30,24 @@
     <div id="loading-msg">Connecting…</div>
   </div>
 
+  <!-- Host pre-game lobby -->
+  <div id="host-lobby" style="display:none;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:18px;padding:40px">
+    <div style="font-family:'Cinzel',serif;color:var(--gold);font-size:1rem;letter-spacing:.12em">ROOM READY</div>
+    <div style="font-size:0.82rem;color:var(--text-dim)">Share this link with friends:</div>
+    <div id="lobby-link" onclick="copyRoomLink()" title="Click to copy"
+         style="cursor:pointer;background:var(--bg-panel);border:1px solid var(--border);padding:10px 18px;border-radius:8px;font-size:0.78rem;max-width:500px;word-break:break-all"></div>
+    <div id="lobby-players" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;min-height:28px"></div>
+    <button class="btn btn-primary" onclick="hostStartGame()">▶ Start Game</button>
+    <p style="font-size:0.75rem;color:var(--text-muted)">You can start alone or wait for others to join.</p>
+  </div>
+
+  <!-- Guest waiting screen -->
+  <div id="guest-waiting" style="display:none;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:14px">
+    <div class="spinner"></div>
+    <div style="color:var(--text-dim)">Connected — waiting for host to start…</div>
+    <div id="guest-lobby-players" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;min-height:28px"></div>
+  </div>
+
   <!-- Game container -->
   <div id="game-container" style="display:none"></div>
 
@@ -116,6 +134,23 @@ function appendChat(senderName, text) {
   log.scrollTop = log.scrollHeight;
 }
 
+// ── Host lobby helpers ────────────────────────────────────────────────────────
+function renderLobbyPlayers() {
+  document.getElementById('lobby-players').innerHTML = allPlayers.map((p, i) =>
+    `<span style="font-size:0.82rem;color:${p.color || PLAYER_COLORS[i]};padding:3px 10px;border:1px solid ${(p.color || PLAYER_COLORS[i])}40;border-radius:16px">${p.name}${p.id === myPlayerId ? ' (you)' : ''}</span>`
+  ).join('');
+}
+
+function hostStartGame() {
+  document.getElementById('host-lobby').style.display = 'none';
+  // Tell all connected guests who they are and that the game is starting
+  allPlayers.forEach((p, i) => {
+    if (i === 0) return; // skip host
+    network.sendTo(p.id, { type: 'START_GAME', players: allPlayers, yourPlayerId: p.id });
+  });
+  startGame(allPlayers);
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   if (!roomId) {
@@ -139,37 +174,42 @@ async function init() {
     try {
       const hostId = await network.createRoom(myName, roomId);
       myPlayerId = hostId;
-      allPlayers = (storedPlayers || [{ id: hostId, name: myName }]).map((p, i) => ({
-        ...p,
-        id: p.id === storedPlayers?.[0]?.id ? hostId : p.id,
-        color: PLAYER_COLORS[i]
-      }));
-      allPlayers[0].id = hostId; // ensure host id matches peer id
+      allPlayers = [{ id: hostId, name: myName, color: PLAYER_COLORS[0] }];
       renderHeaderPlayers();
       setHeaderStatus('Hosting · Room ' + hostId.slice(0,8) + '…', 'var(--gold)');
 
-      // Start game immediately (players already accepted in lobby)
-      startGame(allPlayers);
+      // Show pre-game lobby; game starts when host clicks Start
+      document.getElementById('loading-screen').style.display = 'none';
+      document.getElementById('host-lobby').style.display = 'flex';
+      document.getElementById('lobby-link').textContent =
+        `${location.origin}${location.pathname}?room=${roomId}&game=${gameId}`;
+      renderLobbyPlayers();
 
-      // Handle late joiners: send state
       network.onPlayerJoined = (p) => {
+        const color = PLAYER_COLORS[allPlayers.length % PLAYER_COLORS.length];
+        const guest = { id: p.peerId, name: p.name, color };
+        allPlayers.push(guest);
+        renderHeaderPlayers();
+        renderLobbyPlayers();
         setHeaderStatus(`${p.name} joined`, 'var(--green)');
         setTimeout(() => setHeaderStatus('Hosting', 'var(--gold)'), 3000);
         if (engine?.state) {
-          network.sendTo(p.peerId, { type: 'STATE_UPDATE', state: engine.state });
+          // Game already running — add guest as new player and sync state
+          engine.state.players.push(guest);
+          network.sendTo(p.peerId, { type: 'STATE_UPDATE', state: engine.state, yourPlayerId: p.peerId });
+          network.broadcast({ type: 'STATE_UPDATE', state: engine.state });
+        } else {
+          // Still in lobby — tell guest who they are and who's waiting
+          network.sendTo(p.peerId, { type: 'LOBBY_UPDATE', players: allPlayers, yourPlayerId: p.peerId });
         }
       };
 
-      // Re-route chat broadcasting
-      const origOnMsg = network.onMessage;
       network.onMessage = (msg, fromId) => {
         if (msg.type === 'ACTION' && engine) {
           engine._processAction(msg.action);
         } else if (msg.type === 'CHAT') {
           appendChat(msg.senderName, msg.text);
           network.broadcast(msg);
-        } else {
-          origOnMsg?.(msg, fromId);
         }
       };
 
@@ -186,15 +226,29 @@ async function init() {
       myPlayerId = myId;
       setHeaderStatus('Connected · Room ' + roomId.slice(0,8) + '…', 'var(--green)');
 
+      // Show guest waiting screen
+      document.getElementById('loading-screen').style.display = 'none';
+      document.getElementById('guest-waiting').style.display = 'flex';
+
       network.onMessage = (msg, fromId) => {
-        if (msg.type === 'STATE_UPDATE' || msg.type === 'GAME_OVER') {
+        if (msg.type === 'LOBBY_UPDATE') {
+          // Host told us who we are while waiting in lobby
+          myPlayerId = msg.yourPlayerId;
+          allPlayers = msg.players;
+          renderHeaderPlayers();
+          document.getElementById('guest-lobby-players').innerHTML = msg.players.map((p, i) =>
+            `<span style="font-size:0.82rem;color:${p.color || PLAYER_COLORS[i]};padding:3px 10px;border:1px solid ${(p.color || PLAYER_COLORS[i])}40;border-radius:16px">${p.name}${p.id === myPlayerId ? ' (you)' : ''}</span>`
+          ).join('');
+        } else if (msg.type === 'START_GAME') {
+          // Host started — our player slot is msg.yourPlayerId
+          myPlayerId = msg.yourPlayerId || myPlayerId;
+          document.getElementById('guest-waiting').style.display = 'none';
+          startGame(msg.players);
+        } else if (msg.type === 'STATE_UPDATE' || msg.type === 'GAME_OVER') {
+          if (msg.yourPlayerId) myPlayerId = msg.yourPlayerId;
           if (!engine) {
-            // First state: figure out my player id from state
-            const state = msg.state;
-            const me = state.players.find(p => p.name === myName) || state.players.find(p => !p.id?.includes(roomId));
-            // Best guess: match by position (guest is likely player[1])
-            myPlayerId = state.players.find(p => p.id !== roomId)?.id || myId;
-            startGame(state.players, state);
+            document.getElementById('guest-waiting').style.display = 'none';
+            startGame(msg.state.players, msg.state);
           } else {
             engine._handleNetworkMessage(msg, fromId);
           }
@@ -203,7 +257,6 @@ async function init() {
         }
       };
 
-      // Override sendToHost in engine
     } catch(e) {
       setLoading('Could not connect. Room may not exist or host left.');
     }

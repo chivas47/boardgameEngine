@@ -108,30 +108,14 @@ renderGameCards();
 // ── CREATE ROOM ─────────────────────────────────────────────────────────────
 function createRoom() {
   myName = document.getElementById('host-name').value.trim() || 'Host';
-  const statusEl = document.getElementById('create-status');
-  const btn = document.getElementById('btn-create');
-
-  // Generate a random room ID locally — no P2P needed in the lobby.
-  // play.html will create the actual PeerJS peer using this same ID.
   const roomId = Math.random().toString(36).slice(2, 10);
-
-  hostPlayers = [{ id: roomId, name: myName, isHost: true }];
-
-  const link = `${location.origin}${location.pathname.replace('index.html', '')}play.html?room=${roomId}&game=${selectedGameId}`;
-
-  document.getElementById('room-created').style.display = 'block';
-  document.getElementById('room-link-display').textContent = link;
-  statusEl.textContent = '';
-  btn.style.display = 'none';
-
-  renderHostPlayerList();
-  updateStartButton();
-
-  // Store for play page
   sessionStorage.setItem('bge_room', roomId);
   sessionStorage.setItem('bge_name', myName);
   sessionStorage.setItem('bge_host', '1');
   sessionStorage.setItem('bge_game', selectedGameId);
+  // Go to play.html immediately so the PeerJS peer is created right away,
+  // allowing guests to join before the host explicitly starts the game.
+  window.location.href = `play.html?room=${roomId}&game=${selectedGameId}&host=1`;
 }
 
 function renderHostPlayerList() {
