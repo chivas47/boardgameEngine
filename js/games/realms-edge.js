@@ -13,7 +13,8 @@ const RealmsEdge = (() => {
   // ── Constants ───────────────────────────────────────────────────────────────
   const N = 24;
   const WIN_GOLD = 100;
-  const CX = 330, CY = 310, R = 220; // SVG board center + radius
+  const CX = 400, CY = 385, R = 270; // SVG board center + radius
+  const SVG_W = 800, SVG_H = 760;
 
   // ── Hero Classes ─────────────────────────────────────────────────────────────
   const CLASSES = {
@@ -74,6 +75,9 @@ const RealmsEdge = (() => {
   function d6() { return Math.floor(Math.random() * 6) + 1; }
 
   const PCOLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12'];
+
+  // Animation state — survives between renders so we can diff and drive effects
+  const _anim = { prevPos: {}, prevGold: {}, prevHp: {} };
 
   // ────────────────────────────────────────────────────────────────────────────
   return {
@@ -412,9 +416,26 @@ const RealmsEdge = (() => {
     //  RENDERER
     // ════════════════════════════════════════════════════════════════════════════
     render(state, container, engine) {
+      this._injectCSS();
+
+      // Diff previous state to drive animations
+      const posChanges = [], goldChanges = [], hpChanges = [];
+      state.players.forEach(p => {
+        if (_anim.prevPos[p.id]  !== undefined && _anim.prevPos[p.id]  !== p.position)
+          posChanges.push({ player: p, from: _anim.prevPos[p.id] });
+        if (_anim.prevGold[p.id] !== undefined && _anim.prevGold[p.id] !== p.gold)
+          goldChanges.push({ player: p, diff: p.gold - _anim.prevGold[p.id] });
+        if (_anim.prevHp[p.id]   !== undefined && _anim.prevHp[p.id]   !== p.hp)
+          hpChanges.push({ player: p, diff: p.hp - _anim.prevHp[p.id] });
+        _anim.prevPos[p.id]  = p.position;
+        _anim.prevGold[p.id] = p.gold;
+        _anim.prevHp[p.id]   = p.hp;
+      });
+
       container.innerHTML = '';
+      container.style.position = 'relative';
       const isMyTurn = engine.playerId === state.currentPlayer;
-      const me = state.players.find(p => p.id === engine.playerId);
+      const me  = state.players.find(p => p.id === engine.playerId);
       const cur = state.players.find(p => p.id === state.currentPlayer);
 
       const wrap = document.createElement('div');
@@ -432,6 +453,25 @@ const RealmsEdge = (() => {
       container.appendChild(wrap);
       this._bindButtons(wrap, state, engine);
 
+      // Fire animations after the DOM is painted
+      setTimeout(() => {
+        const svg = container.querySelector('svg');
+        if (svg) posChanges.forEach(({ player, from }) =>
+          this._animateToken(svg, player, from, player.position));
+        goldChanges.forEach(({ player, diff }) =>
+          this._floatText(container, player.position,
+            diff > 0 ? `+${diff}g` : `${diff}g`, diff > 0 ? '#c9a227' : '#e74c3c'));
+        hpChanges.forEach(({ player, diff }) => {
+          if (diff !== 0)
+            this._floatText(container, player.position,
+              diff > 0 ? `+${diff} HP` : `${diff} HP`, diff > 0 ? '#27ae60' : '#e74c3c');
+          if (diff < 0) {
+            const card = container.querySelector(`[data-pid="${player.id}"]`);
+            if (card) { card.classList.add('re-hp-flash'); setTimeout(() => card.classList.remove('re-hp-flash'), 700); }
+          }
+        });
+      }, 0);
+
       if (state.phase === 'GAME_OVER') {
         const ov = document.createElement('div');
         ov.className = 'gameover-overlay';
@@ -442,116 +482,198 @@ const RealmsEdge = (() => {
       }
     },
 
-    // ── SVG Board ───────────────────────────────────────────────────────────────
-    _svgBoard(state, engine) {
-      const W = 660, H = 630;
-      const positions = Array.from({ length: N }, (_, i) => tilePos(i));
+    // ── CSS (injected once) ───────────────────────────────────────────────────────
+    _injectCSS() {
+      if (document.getElementById('re-anim-css')) return;
+      const s = document.createElement('style');
+      s.id = 're-anim-css';
+      s.textContent = `
+        @keyframes re-float { from{transform:translateY(0);opacity:1} to{transform:translateY(-60px);opacity:0} }
+        @keyframes re-hp-flash { 0%,100%{box-shadow:none} 45%{box-shadow:0 0 16px #e74c3c,inset 0 0 10px #e74c3c55} }
+        .re-float-txt { position:absolute;pointer-events:none;z-index:999;
+          font-family:'Cinzel',serif;font-weight:bold;font-size:1rem;
+          text-shadow:0 1px 5px #000a;animation:re-float 1.3s ease-out forwards; }
+        .re-hp-flash  { animation:re-hp-flash 0.7s ease-out !important; }
+        .re-btn { display:block;width:100%;padding:9px 14px;margin-bottom:7px;border:none;
+          border-radius:6px;cursor:pointer;font-family:'Cinzel',serif;font-size:0.78rem;
+          font-weight:600;letter-spacing:.04em;transition:filter .15s,transform .1s; }
+        .re-btn:hover:not(:disabled)  { filter:brightness(1.25);transform:translateY(-2px); }
+        .re-btn:active:not(:disabled) { transform:translateY(0); }
+        .re-btn:disabled { opacity:.4;cursor:not-allowed; }
+        .re-btn.pri    { background:linear-gradient(135deg,#b8860b,#d4a820);color:#1a1208; }
+        .re-btn.danger { background:linear-gradient(135deg,#922b21,#e74c3c);color:#fff; }
+        .re-btn.sec    { background:linear-gradient(135deg,#1a3a2a,#2a5a3a);color:#7ec8a0;border:1px solid #2a5a3a; }
+        .re-btn.ghost  { background:transparent;color:var(--text-dim);border:1px solid #3d2e18; }
+        .re-btn.magic  { background:linear-gradient(135deg,#1a0a2a,#2a6090);color:#a0c8ff;border:1px solid #3498db55; }
+        .re-class-btn  { background:#1a1208;border:1px solid #3d2e18;border-radius:8px;padding:10px 8px;
+          cursor:pointer;color:#e8d5a3;transition:all .2s;text-align:center;min-width:80px; }
+        .re-class-btn:hover { border-color:#c9a227;background:#2a1e08;transform:translateY(-3px);
+          box-shadow:0 5px 14px #c9a22755; }
+        .re-barfill { transition: width 0.5s ease; }
+      `;
+      document.head.appendChild(s);
+    },
 
-      // Players grouped by tile
+    // ── Token move animation (step-by-step along the ring) ───────────────────────
+    _animateToken(svg, player, fromPos, toPos) {
+      const steps = [];
+      let p = fromPos;
+      while (p !== toPos) { p = (p + 1) % N; steps.push(tilePos(p)); }
+      if (!steps.length) return;
+
+      const startPt = tilePos(fromPos);
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      g.innerHTML = `
+        <circle r="11" fill="${player.color}" stroke="white" stroke-width="2.5"/>
+        <text y="4" text-anchor="middle" font-size="9" fill="white"
+          font-family="Cinzel,serif" font-weight="bold">${player.name[0]}</text>`;
+      g.style.cssText = `
+        transform: translate(${startPt.x}px, ${startPt.y + 24}px);
+        filter: drop-shadow(0 0 8px ${player.color});
+        transition: transform 75ms linear;
+        will-change: transform;`;
+      svg.appendChild(g);
+      void g.getBoundingClientRect(); // flush layout so first transition fires
+
+      let idx = 0;
+      const nextStep = () => {
+        if (idx >= steps.length) { setTimeout(() => g.remove(), 90); return; }
+        const pt = steps[idx++];
+        g.style.transform = `translate(${pt.x}px, ${pt.y + 24}px)`;
+        setTimeout(nextStep, 82);
+      };
+      setTimeout(nextStep, 0);
+    },
+
+    // ── Floating feedback text ────────────────────────────────────────────────────
+    _floatText(container, tileIdx, text, color) {
+      const svg = container.querySelector('svg');
+      if (!svg) return;
+      const pt  = tilePos(tileIdx);
+      const sr  = svg.getBoundingClientRect();
+      const cr  = container.getBoundingClientRect();
+      const vb  = svg.viewBox.baseVal;
+      const el  = document.createElement('div');
+      el.className  = 're-float-txt';
+      el.textContent = text;
+      el.style.color = color || '#c9a227';
+      el.style.left  = (sr.left - cr.left + pt.x * (sr.width  / vb.width)  - 20) + 'px';
+      el.style.top   = (sr.top  - cr.top  + pt.y * (sr.height / vb.height) - 32) + 'px';
+      container.appendChild(el);
+      setTimeout(() => el.remove(), 1400);
+    },
+
+    // ── SVG Board ────────────────────────────────────────────────────────────────
+    _svgBoard(state, engine) {
+      const W = SVG_W, H = SVG_H;
+      const positions = Array.from({ length: N }, (_, i) => tilePos(i));
       const byPos = {};
       state.players.forEach(p => { (byPos[p.position] = byPos[p.position] || []).push(p); });
 
-      // Path ring
-      const pathPts = positions.map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ') + 'Z';
+      const pathPts = positions.map((pos, i) => `${i ? 'L' : 'M'}${pos.x} ${pos.y}`).join(' ') + 'Z';
+      const sz = 44;
 
-      // Tiles
       const tiles = positions.map((pos, i) => {
         const tile = BOARD[i];
         const players = byPos[i] || [];
         const isActiveTile = players.some(p => p.id === state.currentPlayer);
-        const sz = 33;
 
         const tokens = players.map((p, pi) => {
-          const ox = (pi - (players.length - 1) / 2) * 14;
-          return `<circle cx="${pos.x + ox}" cy="${pos.y + 22}" r="7" fill="${p.color}" stroke="#0d0a07" stroke-width="1.5"/>
-                  <text x="${pos.x + ox}" y="${pos.y + 26}" text-anchor="middle" font-size="7" fill="white" font-family="Cinzel,serif" font-weight="bold">${p.name[0]}</text>`;
+          const ox = (pi - (players.length - 1) / 2) * 17;
+          return `
+            <circle cx="${pos.x+ox}" cy="${pos.y+26}" r="9" fill="${p.color}"
+              stroke="white" stroke-width="1.5" style="filter:drop-shadow(0 0 4px ${p.color})"/>
+            <text x="${pos.x+ox}" y="${pos.y+30}" text-anchor="middle"
+              font-size="8.5" fill="white" font-family="Cinzel,serif" font-weight="bold">${p.name[0]}</text>`;
         }).join('');
 
-        const glow = isActiveTile
-          ? `<circle cx="${pos.x}" cy="${pos.y}" r="${sz/2+7}" fill="none" stroke="#f0c040" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.9"/>`
-          : '';
+        const glow = isActiveTile ? `
+          <circle cx="${pos.x}" cy="${pos.y}" r="${sz/2+10}" fill="none"
+            stroke="#f0c040" stroke-width="2" stroke-dasharray="5,3" opacity="0.9">
+            <animateTransform attributeName="transform" type="rotate"
+              from="0 ${pos.x} ${pos.y}" to="360 ${pos.x} ${pos.y}" dur="7s" repeatCount="indefinite"/>
+          </circle>` : '';
 
         return `<g class="re-tile">
           ${glow}
-          <rect x="${pos.x-sz/2}" y="${pos.y-sz/2}" width="${sz}" height="${sz}" rx="8"
-            fill="${tile.color}22" stroke="${tile.color}" stroke-width="${i===0?2.5:1.5}"/>
-          <text x="${pos.x}" y="${pos.y+6}" text-anchor="middle" font-size="17">${tile.icon}</text>
+          <rect x="${pos.x-sz/2}" y="${pos.y-sz/2}" width="${sz}" height="${sz}" rx="9"
+            fill="${tile.color}22" stroke="${tile.color}" stroke-width="${i===0?2.8:1.8}"/>
+          <text x="${pos.x}" y="${pos.y+8}" text-anchor="middle" font-size="20">${tile.icon}</text>
           ${tokens}
         </g>`;
       }).join('');
 
-      // Center panel
       const center = this._svgCenter(state, W, H);
 
-      return `<div class="re-board-svg-wrap"><svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:575px">
+      return `<div class="re-board-svg-wrap"><svg viewBox="0 0 ${W} ${H}"
+        xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:660px">
         <defs>
           <radialGradient id="reBg" cx="50%" cy="50%">
-            <stop offset="0%" stop-color="#143d25" stop-opacity="0.9"/>
-            <stop offset="100%" stop-color="#0a2415"/>
+            <stop offset="0%"   stop-color="#143d25" stop-opacity="0.97"/>
+            <stop offset="100%" stop-color="#081a10"/>
           </radialGradient>
         </defs>
-        <rect width="${W}" height="${H}" fill="url(#reBg)" rx="14"/>
-        <path d="${pathPts}" fill="none" stroke="#2a4a30" stroke-width="3" stroke-dasharray="7,5"/>
-        ${tiles}
-        ${center}
+        <rect width="${W}" height="${H}" fill="url(#reBg)" rx="16"/>
+        <path d="${pathPts}" fill="none" stroke="#2a4a30" stroke-width="3" stroke-dasharray="8,5"/>
+        ${tiles}${center}
       </svg></div>`;
     },
 
     _svgCenter(state, W, H) {
       const x = CX, y = CY - 10;
-      const bw = 230, bh = 175;
+      const bw = 270, bh = 200;
       const bx = x - bw/2, by = y - bh/2;
-
       let inner = '';
 
       if (state.phase === 'CLASS_SELECT') {
         const selName = state.players[state.classSelectIndex]?.name || '';
         inner = `
-          <text x="${x}" y="${by+28}" text-anchor="middle" font-family="Cinzel,serif" font-size="13" fill="#c9a227">Choose Your Hero</text>
-          <text x="${x}" y="${by+50}" text-anchor="middle" font-family="Cinzel,serif" font-size="10" fill="#7a6218">${selName}'s turn to pick</text>
-          <text x="${x}" y="${y+10}" text-anchor="middle" font-size="32">⚔️🗡️🔮🏹</text>
-        `;
+          <text x="${x}" y="${by+32}" text-anchor="middle" font-family="Cinzel,serif" font-size="14" fill="#c9a227">Choose Your Hero</text>
+          <text x="${x}" y="${by+56}" text-anchor="middle" font-family="Cinzel,serif" font-size="11" fill="#7a6218">${selName}'s turn to pick</text>
+          <text x="${x}" y="${y+16}" text-anchor="middle" font-size="36">⚔️🗡️🔮🏹</text>`;
       } else if (state.phase === 'COMBAT' && state.encounter) {
-        const m = state.encounter;
-        const lc = m.lastCombat;
+        const m = state.encounter, lc = m.lastCombat;
         inner = `
-          <text x="${x}" y="${by+26}" text-anchor="middle" font-family="Cinzel,serif" font-size="12" fill="#e74c3c">⚔ COMBAT</text>
-          <text x="${x}" y="${by+50}" text-anchor="middle" font-size="30">${m.icon}</text>
-          <text x="${x}" y="${by+80}" text-anchor="middle" font-family="Cinzel,serif" font-size="13" fill="#e8d5a3">${m.name}</text>
-          <text x="${x}" y="${by+100}" text-anchor="middle" font-family="Cinzel,serif" font-size="10" fill="#7a6218">HP ${m.hp} · ATK ${m.atk} · ${m.reward}g reward</text>
-          ${lc ? `<text x="${x}" y="${by+125}" text-anchor="middle" font-family="Cinzel,serif" font-size="11" fill="#f39c12">You ${lc.pt} vs ${lc.mt}</text>` : ''}
-        `;
+          <text x="${x}" y="${by+30}" text-anchor="middle" font-family="Cinzel,serif" font-size="13" fill="#e74c3c">⚔ COMBAT</text>
+          <text x="${x}" y="${by+60}" text-anchor="middle" font-size="34">${m.icon}</text>
+          <text x="${x}" y="${by+92}" text-anchor="middle" font-family="Cinzel,serif" font-size="14" fill="#e8d5a3">${m.name}</text>
+          <text x="${x}" y="${by+112}" text-anchor="middle" font-family="Cinzel,serif" font-size="11" fill="#7a6218">HP ${m.hp} · ATK ${m.atk} · ${m.reward}g</text>
+          ${lc ? `<text x="${x}" y="${by+140}" text-anchor="middle" font-family="Cinzel,serif" font-size="13" fill="${lc.pt>=lc.mt?'#27ae60':'#e74c3c'}">You ${lc.pt} vs ${lc.mt} ${lc.pt>=lc.mt?'✓ Win':'✗ Hit'}</text>` : ''}`;
       } else if (state.phase === 'ROLL' && state.lastRoll) {
         const r = state.lastRoll;
         inner = `
-          <text x="${x}" y="${by+26}" text-anchor="middle" font-family="Cinzel,serif" font-size="11" fill="#7a6218">LAST ROLL</text>
-          <text x="${x-22}" y="${y+8}" text-anchor="middle" font-size="26">🎲</text>
-          <text x="${x+22}" y="${y+8}" text-anchor="middle" font-size="26">🎲</text>
-          <text x="${x-22}" y="${y+30}" text-anchor="middle" font-family="Cinzel,serif" font-size="18" fill="#f0c040" font-weight="bold">${r.die1}</text>
-          <text x="${x+22}" y="${y+30}" text-anchor="middle" font-family="Cinzel,serif" font-size="18" fill="#f0c040" font-weight="bold">${r.die2}</text>
-          <text x="${x}" y="${y+56}" text-anchor="middle" font-family="Cinzel,serif" font-size="10" fill="#7a6218">= ${r.total} steps</text>
-        `;
+          <text x="${x}" y="${by+30}" text-anchor="middle" font-family="Cinzel,serif" font-size="11" fill="#7a6218">LAST ROLL</text>
+          <text x="${x-28}" y="${y+12}" text-anchor="middle" font-size="30">🎲</text>
+          <text x="${x+28}" y="${y+12}" text-anchor="middle" font-size="30">🎲</text>
+          <text x="${x-28}" y="${y+40}" text-anchor="middle" font-family="Cinzel,serif" font-size="24" fill="#f0c040" font-weight="bold">${r.die1}</text>
+          <text x="${x+28}" y="${y+40}" text-anchor="middle" font-family="Cinzel,serif" font-size="24" fill="#f0c040" font-weight="bold">${r.die2}</text>
+          <text x="${x}" y="${y+64}" text-anchor="middle" font-family="Cinzel,serif" font-size="11" fill="#7a6218">= ${r.total} steps</text>`;
       } else if (state.phase === 'TAVERN') {
-        inner = `<text x="${x}" y="${by+36}" text-anchor="middle" font-size="30">🍺</text>
-          <text x="${x}" y="${by+68}" text-anchor="middle" font-family="Cinzel,serif" font-size="13" fill="#c9a227">Tavern</text>
-          <text x="${x}" y="${by+90}" text-anchor="middle" font-family="Cinzel,serif" font-size="10" fill="#7a6218">Rest and recover</text>`;
+        inner = `
+          <text x="${x}" y="${by+40}" text-anchor="middle" font-size="34">🍺</text>
+          <text x="${x}" y="${by+78}" text-anchor="middle" font-family="Cinzel,serif" font-size="14" fill="#c9a227">Tavern</text>
+          <text x="${x}" y="${by+100}" text-anchor="middle" font-family="Cinzel,serif" font-size="11" fill="#7a6218">Rest and recover</text>`;
       } else if (state.phase === 'TOWN') {
-        inner = `<text x="${x}" y="${by+36}" text-anchor="middle" font-size="30">🏪</text>
-          <text x="${x}" y="${by+68}" text-anchor="middle" font-family="Cinzel,serif" font-size="13" fill="#c9a227">Market</text>
-          <text x="${x}" y="${by+90}" text-anchor="middle" font-family="Cinzel,serif" font-size="10" fill="#7a6218">Buy upgrades</text>`;
+        inner = `
+          <text x="${x}" y="${by+40}" text-anchor="middle" font-size="34">🏪</text>
+          <text x="${x}" y="${by+78}" text-anchor="middle" font-family="Cinzel,serif" font-size="14" fill="#c9a227">Market</text>
+          <text x="${x}" y="${by+100}" text-anchor="middle" font-family="Cinzel,serif" font-size="11" fill="#7a6218">Buy upgrades</text>`;
       } else if (state.phase === 'QUEST' && state.encounter) {
-        inner = `<text x="${x}" y="${by+36}" text-anchor="middle" font-size="28">🗿</text>
-          <text x="${x}" y="${by+66}" text-anchor="middle" font-family="Cinzel,serif" font-size="12" fill="#c9a227">Ancient Quest</text>
-          <text x="${x}" y="${by+90}" text-anchor="middle" font-family="Cinzel,serif" font-size="10" fill="#27ae60">Win: +${state.encounter.reward}g (roll 4+)</text>
-          <text x="${x}" y="${by+110}" text-anchor="middle" font-family="Cinzel,serif" font-size="10" fill="#e74c3c">Fail: -${state.encounter.penalty}g</text>`;
+        inner = `
+          <text x="${x}" y="${by+40}" text-anchor="middle" font-size="32">🗿</text>
+          <text x="${x}" y="${by+76}" text-anchor="middle" font-family="Cinzel,serif" font-size="13" fill="#c9a227">Ancient Quest</text>
+          <text x="${x}" y="${by+100}" text-anchor="middle" font-family="Cinzel,serif" font-size="11" fill="#27ae60">Win: +${state.encounter.reward}g (roll 4+)</text>
+          <text x="${x}" y="${by+122}" text-anchor="middle" font-family="Cinzel,serif" font-size="11" fill="#e74c3c">Fail: -${state.encounter.penalty}g</text>`;
       } else {
-        inner = `<text x="${x}" y="${y-5}" text-anchor="middle" font-size="38">🐉</text>
-          <text x="${x}" y="${y+28}" text-anchor="middle" font-family="Cinzel,serif" font-size="14" fill="#c9a227" letter-spacing="2">REALM'S EDGE</text>
-          <text x="${x}" y="${y+50}" text-anchor="middle" font-family="Cinzel,serif" font-size="9" fill="#5a4a30">First to ${WIN_GOLD} gold wins</text>`;
+        inner = `
+          <text x="${x}" y="${y-6}" text-anchor="middle" font-size="42">🐉</text>
+          <text x="${x}" y="${y+34}" text-anchor="middle" font-family="Cinzel,serif" font-size="15" fill="#c9a227" letter-spacing="2">REALM'S EDGE</text>
+          <text x="${x}" y="${y+56}" text-anchor="middle" font-family="Cinzel,serif" font-size="10" fill="#5a4a30">First to ${WIN_GOLD} gold wins</text>`;
       }
 
       return `<g>
-        <rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="14" fill="#1a1208dd" stroke="#3d2e18" stroke-width="1.5"/>
+        <rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="14"
+          fill="#1a1208ee" stroke="#3d2e18" stroke-width="1.5"/>
         ${inner}
       </g>`;
     },
@@ -560,16 +682,18 @@ const RealmsEdge = (() => {
     _renderPlayers(state, engine) {
       return `<div class="re-players">
         ${state.players.map(p => {
-          const isMe = p.id === engine.playerId;
+          const isMe  = p.id === engine.playerId;
           const isCur = p.id === state.currentPlayer;
           const hpPct = Math.round((p.hp / p.maxHp) * 100);
-          const gPct = Math.min(100, Math.round((p.gold / WIN_GOLD) * 100));
+          const gPct  = Math.min(100, Math.round((p.gold / WIN_GOLD) * 100));
           const hpCol = hpPct > 50 ? '#27ae60' : hpPct > 25 ? '#f39c12' : '#e74c3c';
-          return `<div class="re-pcard ${isCur ? 'cur' : ''}" style="border-color:${p.color}${isCur?'':'55'}">
+          return `<div class="re-pcard ${isCur?'cur':''}" data-pid="${p.id}"
+              style="border-color:${p.color}${isCur?'':'55'}">
             <div class="re-pcard-head">
-              <span class="re-icon">${p.classIcon || '❓'}</span>
-              <span style="color:${p.color};font-family:'Cinzel',serif;font-size:0.82rem;font-weight:600">${p.name}${isMe?' (you)':''}</span>
-              ${isCur ? `<span class="re-live-dot" style="background:${p.color}"></span>` : ''}
+              <span class="re-icon">${p.classIcon||'❓'}</span>
+              <span style="color:${p.color};font-family:'Cinzel',serif;font-size:0.82rem;font-weight:600">
+                ${p.name}${isMe?' (you)':''}</span>
+              ${isCur?`<span class="re-live-dot" style="background:${p.color}"></span>`:''}
             </div>
             <div class="re-pclass">${p.class ? CLASSES[p.class]?.name : 'Choosing…'}</div>
             <div class="re-bar-row">
@@ -590,7 +714,6 @@ const RealmsEdge = (() => {
 
     // ── Action panel ─────────────────────────────────────────────────────────────
     _renderAction(state, engine, isMyTurn, me, cur) {
-      // Class selection
       if (state.phase === 'CLASS_SELECT') {
         const pickingMe = state.players[state.classSelectIndex]?.id === engine.playerId;
         if (!pickingMe) return `<div class="re-actions"><p class="re-wait">⏳ Waiting for ${state.players[state.classSelectIndex]?.name} to choose…</p></div>`;
@@ -599,11 +722,10 @@ const RealmsEdge = (() => {
           <div class="re-class-grid">
             ${Object.entries(CLASSES).map(([k, c]) => `
               <button class="re-class-btn" data-action="SELECT_CLASS" data-class="${k}">
-                <div style="font-size:1.5rem">${c.icon}</div>
+                <div style="font-size:1.6rem">${c.icon}</div>
                 <div style="font-family:'Cinzel',serif;font-size:0.75rem;color:#c9a227;margin:3px 0">${c.name}</div>
                 <div style="font-size:0.68rem;color:#7a6218">${c.special}</div>
-              </button>
-            `).join('')}
+              </button>`).join('')}
           </div>
         </div>`;
       }
@@ -612,22 +734,22 @@ const RealmsEdge = (() => {
 
       switch (state.phase) {
         case 'ROLL':
-          return `<div class="re-actions"><h3>Your Turn</h3><button class="re-btn pri" data-action="ROLL_DICE">🎲 Roll the Dice</button></div>`;
-
+          return `<div class="re-actions"><h3>Your Turn</h3>
+            <button class="re-btn pri" data-action="ROLL_DICE">🎲 Roll the Dice</button></div>`;
         case 'COMBAT': {
           const canReroll = me?.class === 'mage' && !me?.mageRerollUsed;
           return `<div class="re-actions">
             <h3>⚔️ Combat</h3>
             <button class="re-btn danger" data-action="FIGHT">⚔️ Fight!</button>
             ${canReroll ? `<button class="re-btn magic" data-action="MAGE_REROLL">🔮 Arcane Reroll</button>` : ''}
-            <button class="re-btn sec" data-action="FLEE">🏃 Flee ${me?.class==='ranger'? '(3+)':'(4+)'}</button>
+            <button class="re-btn sec" data-action="FLEE">🏃 Flee ${me?.class==='ranger'?'(3+)':'(4+)'}</button>
           </div>`;
         }
         case 'TAVERN': {
           const canFull = me?.gold >= 10;
           return `<div class="re-actions">
             <h3>🍺 Tavern</h3>
-            <button class="re-btn pri" data-action="HEAL_FULL" ${!canFull?'disabled':''}>Full Rest (10g) — heal to ${me?.maxHp} HP${!canFull?' ✗':''}</button>
+            <button class="re-btn pri" data-action="HEAL_FULL" ${!canFull?'disabled':''}>Full Rest (10g) — ${me?.maxHp} HP${!canFull?' ✗':''}</button>
             <button class="re-btn sec" data-action="HEAL_PARTIAL">Free Rest (+3 HP)</button>
             <button class="re-btn ghost" data-action="LEAVE">Continue →</button>
           </div>`;
@@ -664,8 +786,7 @@ const RealmsEdge = (() => {
     _bindButtons(wrap, state, engine) {
       wrap.querySelectorAll('[data-action]').forEach(btn => {
         btn.addEventListener('click', () => {
-          const t = btn.dataset.action;
-          const ck = btn.dataset.class;
+          const t = btn.dataset.action, ck = btn.dataset.class;
           if (t === 'SELECT_CLASS') engine.submitAction({ type: t, classKey: ck });
           else engine.submitAction({ type: t });
         });
