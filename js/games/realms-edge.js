@@ -79,6 +79,9 @@ const RealmsEdge = (() => {
   // Animation state — survives between renders so we can diff and drive effects
   const _anim = { prevPos: {}, prevGold: {}, prevHp: {}, prevPhase: null };
 
+  // Zoom/pan state — persists across re-renders so the view doesn't reset
+  const _zoom = { scale: 1, tx: 0, ty: 0 };
+
   // ────────────────────────────────────────────────────────────────────────────
   return {
     name: "Realm's Edge",
@@ -466,6 +469,11 @@ const RealmsEdge = (() => {
       container.appendChild(wrap);
       this._bindButtons(wrap, state, engine);
 
+      // Re-apply zoom state immediately (render rebuilds DOM so transform is lost)
+      const zw = wrap.querySelector('.re-board-zoom-wrap');
+      if (zw) zw.style.transform = `translate(${_zoom.tx}px,${_zoom.ty}px) scale(${_zoom.scale})`;
+      this._initBoardTouch(container);
+
       // Tab bar interactions
       wrap.querySelectorAll('[data-re-tab]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -501,6 +509,24 @@ const RealmsEdge = (() => {
         if (phaseChanged && state.phase === 'GAME_OVER') this._playSound('win');
         if (posChanges.length && BOARD[posChanges[0].player.position]?.type === 'CURSED')
           this._playSound('curse');
+
+        // On mobile: briefly show board tab + pan to new tile so players see the move
+        if (posChanges.length && isMobile) {
+          const movedPlayer = posChanges[0].player;
+          wrap.dataset.tab = 'board';
+          wrap.querySelectorAll('[data-re-tab]').forEach(b =>
+            b.classList.toggle('active', b.dataset.reTab === 'board'));
+          setTimeout(() => this._panToTile(container, movedPlayer.position), 120);
+          // After move + toast, switch back to actions if it's still my turn
+          if (isMyTurn) {
+            setTimeout(() => {
+              if (!wrap.isConnected) return;
+              wrap.dataset.tab = 'side';
+              wrap.querySelectorAll('[data-re-tab]').forEach(b =>
+                b.classList.toggle('active', b.dataset.reTab === 'side'));
+            }, 3000);
+          }
+        }
 
         // Tile landing toast — fire after the move animation begins
         if (posChanges.length && state.phase !== 'CLASS_SELECT') {
@@ -591,6 +617,27 @@ const RealmsEdge = (() => {
         .re-toast-bar { background:#2a1808; border-radius:4px; height:4px; overflow:hidden; }
         .re-toast-fill { height:100%; width:100%; background:var(--tc,#c9a227);
           border-radius:4px; transition:width 0s linear; }
+
+        /* ── Board zoom / pan ──────────────────────────────── */
+        .re-board-svg-wrap {
+          overflow:hidden !important; position:relative !important;
+          cursor:grab; touch-action:none; user-select:none;
+        }
+        .re-board-svg-wrap:active { cursor:grabbing; }
+        .re-board-zoom-wrap { transform-origin:0 0; will-change:transform; }
+        .re-board-zoom-btns {
+          position:absolute; bottom:14px; right:14px;
+          display:flex; flex-direction:column; gap:6px; z-index:10;
+        }
+        .re-zoom-btn {
+          width:36px; height:36px; border-radius:8px;
+          border:1px solid #3d2e18; background:#1a1208cc;
+          color:#c9a227; font-size:1.05rem; font-family:sans-serif;
+          cursor:pointer; touch-action:manipulation;
+          display:flex; align-items:center; justify-content:center;
+          transition:background .15s; backdrop-filter:blur(4px);
+        }
+        .re-zoom-btn:hover { background:#2a2010ee; }
 
         /* ── Mobile tab bar ────────────────────────────────── */
         .re-tab-bar {
@@ -853,11 +900,14 @@ const RealmsEdge = (() => {
               from="0 ${pos.x} ${pos.y}" to="360 ${pos.x} ${pos.y}" dur="6s" repeatCount="indefinite"/>
           </circle>` : '';
 
+        const label = tile.name.length > 10 ? tile.name.slice(0, 9) + '…' : tile.name;
         return `<g class="re-tile">
           ${glow}
           <rect x="${pos.x-sz/2}" y="${pos.y-sz/2}" width="${sz}" height="${sz}" rx="11"
             fill="${tile.color}22" stroke="${tile.color}" stroke-width="${i===0?3:2}"/>
-          <text x="${pos.x}" y="${pos.y+9}" text-anchor="middle" font-size="22">${tile.icon}</text>
+          <text x="${pos.x}" y="${pos.y+5}" text-anchor="middle" font-size="21">${tile.icon}</text>
+          <text x="${pos.x}" y="${pos.y+20}" text-anchor="middle" font-size="6.5"
+            fill="#e8d5a3" opacity="0.8" font-family="Cinzel,serif">${label}</text>
           ${tokens}
         </g>`;
       }).join('');
@@ -872,18 +922,27 @@ const RealmsEdge = (() => {
       const vbW = Math.round((R + sz/2 + vbMargin) * 2);
       const vbH = Math.round(R + sz/2 + vbMargin + 42 + (R + sz/2 + vbMargin)); // extra 42 for tokens below tile
 
-      return `<div class="re-board-svg-wrap"><svg viewBox="${vbX} ${vbY} ${vbW} ${vbH}"
-        xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:800px">
-        <defs>
-          <radialGradient id="reBg" cx="50%" cy="50%">
-            <stop offset="0%"   stop-color="#143d25" stop-opacity="0.97"/>
-            <stop offset="100%" stop-color="#081a10"/>
-          </radialGradient>
-        </defs>
-        <rect width="${W}" height="${H}" fill="url(#reBg)" rx="16"/>
-        <path d="${pathPts}" fill="none" stroke="#2a4a30" stroke-width="3" stroke-dasharray="8,5"/>
-        ${tiles}${center}
-      </svg></div>`;
+      return `<div class="re-board-svg-wrap">
+        <div class="re-board-zoom-wrap">
+          <svg viewBox="${vbX} ${vbY} ${vbW} ${vbH}"
+            xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:800px">
+            <defs>
+              <radialGradient id="reBg" cx="50%" cy="50%">
+                <stop offset="0%"   stop-color="#143d25" stop-opacity="0.97"/>
+                <stop offset="100%" stop-color="#081a10"/>
+              </radialGradient>
+            </defs>
+            <rect width="${W}" height="${H}" fill="url(#reBg)" rx="16"/>
+            <path d="${pathPts}" fill="none" stroke="#2a4a30" stroke-width="3" stroke-dasharray="8,5"/>
+            ${tiles}${center}
+          </svg>
+        </div>
+        <div class="re-board-zoom-btns">
+          <button class="re-zoom-btn" data-zoom="+" title="Zoom in">＋</button>
+          <button class="re-zoom-btn" data-zoom="-" title="Zoom out">－</button>
+          <button class="re-zoom-btn" data-zoom="0" title="Reset view">⊙</button>
+        </div>
+      </div>`;
     },
 
     _svgCenter(state, W, H) {
@@ -1047,6 +1106,169 @@ const RealmsEdge = (() => {
         <div class="re-log-hd">📜 Chronicle</div>
         ${(state.log || []).slice(-8).reverse().map(l => `<div class="re-log-ln">${l}</div>`).join('')}
       </div>`;
+    },
+
+    // ── Board touch/pointer: pan + pinch-to-zoom ─────────────────────────────────
+    _initBoardTouch(container) {
+      const outer = container.querySelector('.re-board-svg-wrap');
+      const inner = container.querySelector('.re-board-zoom-wrap');
+      if (!outer || !inner) return;
+
+      const apply = (animated) => {
+        inner.style.transition = animated
+          ? 'transform 0.5s cubic-bezier(0.25,0.46,0.45,0.94)' : 'none';
+        inner.style.transform = `translate(${_zoom.tx}px,${_zoom.ty}px) scale(${_zoom.scale})`;
+      };
+
+      const clamp = () => {
+        const ow = outer.offsetWidth, oh = outer.offsetHeight;
+        const iw = inner.offsetWidth, ih = inner.offsetHeight;
+        _zoom.scale = Math.max(0.8, Math.min(5, _zoom.scale));
+        _zoom.tx = Math.max(-(iw * _zoom.scale - ow * 0.25), Math.min(ow * 0.75, _zoom.tx));
+        _zoom.ty = Math.max(-(ih * _zoom.scale - oh * 0.25), Math.min(oh * 0.75, _zoom.ty));
+      };
+
+      // Touch events (mobile pinch + drag)
+      let touches = {}, lastDist = null, lastMid = null, lastTap = 0;
+      let dragging = false, dragX = 0, dragY = 0;
+
+      outer.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        for (const t of e.changedTouches) touches[t.identifier] = { x: t.clientX, y: t.clientY };
+        const ids = Object.keys(touches);
+        if (ids.length === 1) {
+          dragging = true; dragX = e.touches[0].clientX; dragY = e.touches[0].clientY;
+          const now = Date.now();
+          if (now - lastTap < 280) {
+            // Double-tap: zoom to 2x at tap point, or reset if already zoomed
+            const rect = outer.getBoundingClientRect();
+            const px = e.touches[0].clientX - rect.left;
+            const py = e.touches[0].clientY - rect.top;
+            if (_zoom.scale > 1.4) {
+              _zoom.scale = 1; _zoom.tx = 0; _zoom.ty = 0;
+            } else {
+              const ns = 2.2;
+              _zoom.tx = px - (px - _zoom.tx) * (ns / _zoom.scale);
+              _zoom.ty = py - (py - _zoom.ty) * (ns / _zoom.scale);
+              _zoom.scale = ns;
+            }
+            clamp(); apply(true);
+          }
+          lastTap = now;
+        } else if (ids.length === 2) {
+          dragging = false;
+          const t0 = e.touches[0], t1 = e.touches[1];
+          lastDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+          lastMid = { x: (t0.clientX + t1.clientX) / 2, y: (t0.clientY + t1.clientY) / 2 };
+        }
+      }, { passive: false });
+
+      outer.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        if (e.touches.length === 2) {
+          const t0 = e.touches[0], t1 = e.touches[1];
+          const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+          const mid = { x: (t0.clientX + t1.clientX) / 2, y: (t0.clientY + t1.clientY) / 2 };
+          if (lastDist !== null) {
+            const ratio = dist / lastDist;
+            const rect = outer.getBoundingClientRect();
+            const px = mid.x - rect.left, py = mid.y - rect.top;
+            _zoom.tx = px - (px - _zoom.tx) * ratio + (mid.x - lastMid.x);
+            _zoom.ty = py - (py - _zoom.ty) * ratio + (mid.y - lastMid.y);
+            _zoom.scale *= ratio;
+            clamp(); apply(false);
+          }
+          lastDist = dist; lastMid = mid;
+        } else if (e.touches.length === 1 && dragging) {
+          _zoom.tx += e.touches[0].clientX - dragX;
+          _zoom.ty += e.touches[0].clientY - dragY;
+          dragX = e.touches[0].clientX; dragY = e.touches[0].clientY;
+          clamp(); apply(false);
+        }
+      }, { passive: false });
+
+      outer.addEventListener('touchend', (e) => {
+        for (const t of e.changedTouches) delete touches[t.identifier];
+        if (e.touches.length < 2) lastDist = null;
+        if (e.touches.length === 0) dragging = false;
+      }, { passive: false });
+
+      // Mouse drag (desktop)
+      let mDown = false, mX = 0, mY = 0;
+      outer.addEventListener('mousedown', (e) => { mDown = true; mX = e.clientX; mY = e.clientY; });
+      outer.addEventListener('mousemove', (e) => {
+        if (!mDown) return;
+        _zoom.tx += e.clientX - mX; _zoom.ty += e.clientY - mY;
+        mX = e.clientX; mY = e.clientY; clamp(); apply(false);
+      });
+      outer.addEventListener('mouseup', () => { mDown = false; });
+      outer.addEventListener('mouseleave', () => { mDown = false; });
+
+      // Mouse wheel zoom
+      outer.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const rect = outer.getBoundingClientRect();
+        const px = e.clientX - rect.left, py = e.clientY - rect.top;
+        const ratio = e.deltaY < 0 ? 1.12 : 0.89;
+        const ns = Math.max(0.8, Math.min(5, _zoom.scale * ratio));
+        _zoom.tx = px - (px - _zoom.tx) * (ns / _zoom.scale);
+        _zoom.ty = py - (py - _zoom.ty) * (ns / _zoom.scale);
+        _zoom.scale = ns; clamp(); apply(false);
+      }, { passive: false });
+
+      // Zoom buttons
+      container.querySelectorAll('.re-zoom-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const z = btn.dataset.zoom;
+          const ow = outer.offsetWidth, oh = outer.offsetHeight;
+          const cx = ow / 2, cy = oh / 2;
+          if (z === '+') {
+            const ns = Math.min(5, _zoom.scale * 1.3);
+            _zoom.tx = cx - (cx - _zoom.tx) * (ns / _zoom.scale);
+            _zoom.ty = cy - (cy - _zoom.ty) * (ns / _zoom.scale);
+            _zoom.scale = ns;
+          } else if (z === '-') {
+            const ns = Math.max(0.8, _zoom.scale / 1.3);
+            _zoom.tx = cx - (cx - _zoom.tx) * (ns / _zoom.scale);
+            _zoom.ty = cy - (cy - _zoom.ty) * (ns / _zoom.scale);
+            _zoom.scale = ns;
+          } else {
+            _zoom.scale = 1; _zoom.tx = 0; _zoom.ty = 0;
+          }
+          clamp(); apply(true);
+        });
+      });
+    },
+
+    // ── Pan + zoom to a board tile ─────────────────────────────────────────────
+    _panToTile(container, tileIdx, targetScale) {
+      const outer = container.querySelector('.re-board-svg-wrap');
+      const inner = container.querySelector('.re-board-zoom-wrap');
+      if (!outer || !inner) return;
+      const svg = inner.querySelector('svg');
+      if (!svg) return;
+
+      const pos  = tilePos(tileIdx);
+      const vb   = svg.viewBox.baseVal;
+      const iw   = inner.offsetWidth, ih = inner.offsetHeight;
+      const ow   = outer.offsetWidth,  oh = outer.offsetHeight;
+
+      // Tile's natural (unscaled) pixel position inside the zoom wrap
+      const nx = (pos.x - vb.x) / vb.width  * iw;
+      const ny = (pos.y - vb.y) / vb.height * ih;
+
+      const s = targetScale || Math.max(1.8, _zoom.scale);
+      _zoom.scale = Math.min(5, s);
+      _zoom.tx = ow / 2 - nx * _zoom.scale;
+      _zoom.ty = oh / 2 - ny * _zoom.scale;
+
+      // Clamp
+      _zoom.tx = Math.max(-(iw * _zoom.scale - ow * 0.25), Math.min(ow * 0.75, _zoom.tx));
+      _zoom.ty = Math.max(-(ih * _zoom.scale - oh * 0.25), Math.min(oh * 0.75, _zoom.ty));
+
+      inner.style.transition = 'transform 0.65s cubic-bezier(0.25,0.46,0.45,0.94)';
+      inner.style.transform  = `translate(${_zoom.tx}px,${_zoom.ty}px) scale(${_zoom.scale})`;
     },
 
     // ── Button bindings ──────────────────────────────────────────────────────────
