@@ -615,22 +615,33 @@ const RealmsEdge = (() => {
         @keyframes re-tab-pulse { 0%,100%{opacity:1} 50%{opacity:0} }
 
         @media (max-width:720px) {
-          .re-tab-bar { display:grid !important; }
-          .re-wrap { padding:0 !important; }
-          .re-layout { grid-template-columns:1fr !important; }
+          .re-tab-bar  { display:grid !important; }
+          .re-wrap     { padding:0 !important; }
+          .re-layout   { grid-template-columns:1fr !important; }
           .re-board-col, .re-side-col { display:none !important; }
           .re-wrap[data-tab="board"] .re-board-col { display:block !important; }
           .re-wrap[data-tab="side"]  .re-side-col  { display:flex !important; flex-direction:column; }
-          .re-board-svg-wrap svg { max-height:calc(100dvh - 148px) !important; }
-          .re-side-col { padding:8px 8px 0; overflow-y:auto; max-height:calc(100dvh - 148px); }
+
+          /* Board tab: SVG fills the full available height */
+          .re-board-col { height:calc(100dvh - 148px); }
+          .re-board-svg-wrap {
+            height:100%; border-radius:0 !important;
+            border-left:none !important; border-right:none !important;
+          }
+          .re-board-svg-wrap svg {
+            width:100% !important; height:100% !important;
+            max-height:none !important;
+          }
+
+          /* Side/actions tab */
+          .re-side-col { padding:10px 10px 0; overflow-y:auto; max-height:calc(100dvh - 148px); }
           .re-actions  { order:1; }
           .re-players  { order:2; }
           .re-log      { order:3; }
           .re-actions h3 { font-size:0.95rem; margin-bottom:10px; }
-          .re-btn { padding:14px !important; font-size:0.88rem !important; min-height:52px; }
+          .re-btn { padding:15px !important; font-size:0.9rem !important; min-height:54px; }
           .re-class-grid { grid-template-columns:1fr 1fr !important; gap:10px !important; }
-          .re-class-btn { padding:16px 8px !important; min-height:88px; }
-          .re-class-btn .re-cb-icon { font-size:2rem; }
+          .re-class-btn  { padding:16px 8px !important; min-height:90px; }
         }
       `;
       document.head.appendChild(s);
@@ -805,8 +816,8 @@ const RealmsEdge = (() => {
       el.className  = 're-float-txt';
       el.textContent = text;
       el.style.color = color || '#c9a227';
-      el.style.left  = (sr.left - cr.left + pt.x * (sr.width  / vb.width)  - 20) + 'px';
-      el.style.top   = (sr.top  - cr.top  + pt.y * (sr.height / vb.height) - 32) + 'px';
+      el.style.left  = (sr.left - cr.left + (pt.x - vb.x) * (sr.width  / vb.width)  - 20) + 'px';
+      el.style.top   = (sr.top  - cr.top  + (pt.y - vb.y) * (sr.height / vb.height) - 32) + 'px';
       container.appendChild(el);
       setTimeout(() => el.remove(), 1400);
     },
@@ -853,8 +864,16 @@ const RealmsEdge = (() => {
 
       const center = this._svgCenter(state, W, H);
 
-      return `<div class="re-board-svg-wrap"><svg viewBox="0 0 ${W} ${H}"
-        xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:780px">
+      // Tight viewBox — crop to the actual ring content (tiles + tokens + center panel)
+      // Ring spans CX±(R+sz/2+5) and CY±(R+sz/2+40) (extra below for token labels)
+      const vbMargin = 18;
+      const vbX = Math.round(CX - R - sz/2 - vbMargin);
+      const vbY = Math.round(CY - R - sz/2 - vbMargin);
+      const vbW = Math.round((R + sz/2 + vbMargin) * 2);
+      const vbH = Math.round(R + sz/2 + vbMargin + 42 + (R + sz/2 + vbMargin)); // extra 42 for tokens below tile
+
+      return `<div class="re-board-svg-wrap"><svg viewBox="${vbX} ${vbY} ${vbW} ${vbH}"
+        xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:800px">
         <defs>
           <radialGradient id="reBg" cx="50%" cy="50%">
             <stop offset="0%"   stop-color="#143d25" stop-opacity="0.97"/>

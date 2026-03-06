@@ -704,8 +704,8 @@ input[type="text"]::placeholder { color: var(--text-muted); }
 
 .re-layout {
   display: grid;
-  grid-template-columns: 1fr 255px;
-  gap: 12px;
+  grid-template-columns: 1fr 272px;
+  gap: 14px;
   align-items: start;
 }
 @media (max-width: 720px) { .re-layout { grid-template-columns: 1fr; } }
@@ -717,6 +717,16 @@ input[type="text"]::placeholder { color: var(--text-muted); }
   border-radius: var(--radius-lg);
   overflow: hidden;
   box-shadow: inset 0 0 50px #00000070;
+  /* Let the SVG fill as much board column width as possible */
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.re-board-svg-wrap svg {
+  width: 100%;
+  height: auto;
+  display: block;
 }
 
 /* Side column */
