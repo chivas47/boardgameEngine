@@ -78,8 +78,8 @@ class P2PNetwork {
   // ── Guest ─────────────────────────────────────────────────────────────────
 
   joinRoom(roomId, playerName) {
-    const MAX_ATTEMPTS = 6;
-    const RETRY_DELAY  = 2500;
+    const MAX_ATTEMPTS = 40;   // ~2 minutes of waiting
+    const RETRY_DELAY  = 3000;
 
     return new Promise((resolve, reject) => {
       this.isHost = false;
