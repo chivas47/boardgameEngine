@@ -156,7 +156,10 @@ async function init() {
 
       network.onPlayerJoined = (p) => {
         const color = PLAYER_COLORS[allPlayers.length % PLAYER_COLORS.length];
-        const guest = { id: p.peerId, name: p.name, color };
+        // Use the game's own createInitialState to get properly-initialized fields
+        // (position, hp, gold, class, etc.) rather than a bare {id,name,color} object.
+        const tempState = game.createInitialState([{ id: p.peerId, name: p.name }]);
+        const guest = { ...tempState.players[0], color };
         allPlayers.push(guest);
         renderHeaderPlayers();
         setHeaderStatus(`${p.name} joined`, 'var(--green)');
