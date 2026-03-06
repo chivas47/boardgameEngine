@@ -30,6 +30,17 @@
     <div id="loading-msg">Connecting…</div>
   </div>
 
+  <!-- Host pre-game lobby (live — guests appear here as they connect) -->
+  <div id="host-lobby" style="display:none;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:20px;padding:40px;text-align:center">
+    <div style="font-family:'Cinzel',serif;color:var(--gold);font-size:1rem;letter-spacing:.12em">ROOM READY</div>
+    <div style="font-size:0.82rem;color:var(--text-dim)">Share this link — friends can join now:</div>
+    <div id="lobby-link" onclick="copyRoomLink()" title="Click to copy"
+         style="cursor:pointer;background:var(--bg-panel);border:1px solid var(--border);padding:10px 18px;border-radius:8px;font-size:0.78rem;max-width:500px;word-break:break-all"></div>
+    <div id="lobby-players" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;min-height:32px"></div>
+    <button class="btn btn-primary" onclick="hostStartGame()">▶ Start Game</button>
+    <p style="font-size:0.75rem;color:var(--text-muted);margin:0">You can start alone or wait for others to join.</p>
+  </div>
+
   <!-- Guest waiting screen -->
   <div id="guest-waiting" style="display:none;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:14px">
     <div class="spinner"></div>
@@ -123,6 +134,23 @@ function appendChat(senderName, text) {
   log.scrollTop = log.scrollHeight;
 }
 
+// ── Pre-game lobby helpers ────────────────────────────────────────────────────
+function renderLobbyPlayers() {
+  document.getElementById('lobby-players').innerHTML = allPlayers.map((p, i) =>
+    `<span style="font-size:0.82rem;color:${p.color||PLAYER_COLORS[i]};padding:3px 10px;border:1px solid ${(p.color||PLAYER_COLORS[i])}40;border-radius:16px">${p.name}${p.id===myPlayerId?' (you)':''}</span>`
+  ).join('');
+}
+
+function hostStartGame() {
+  document.getElementById('host-lobby').style.display = 'none';
+  // Notify each guest individually so they know their own player ID
+  allPlayers.forEach((p, i) => {
+    if (i === 0) return; // skip host
+    network.sendTo(p.id, { type: 'START_GAME', players: allPlayers, yourPlayerId: p.id });
+  });
+  startGame(allPlayers); // host starts; engine.startGame broadcasts STATE_UPDATE to all guests
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   if (!roomId) {
@@ -146,32 +174,50 @@ async function init() {
     try {
       const hostId = await network.createRoom(myName, roomId);
       myPlayerId = hostId;
-      allPlayers = (storedPlayers || [{ id: hostId, name: myName }]).map((p, i) => ({
-        ...p,
-        id: i === 0 ? hostId : p.id,
-        color: PLAYER_COLORS[i]
-      }));
+      allPlayers = [{ id: hostId, name: myName, color: PLAYER_COLORS[0] }];
       renderHeaderPlayers();
       setHeaderStatus('Hosting · Room ' + hostId.slice(0,8) + '…', 'var(--gold)');
 
+      // Show pre-game lobby — the peer is live so guests can connect and appear here
+      document.getElementById('loading-screen').style.display = 'none';
+      document.getElementById('host-lobby').style.display = 'flex';
+      document.getElementById('lobby-link').textContent =
+        `${location.origin}${location.pathname}?room=${roomId}&game=${gameId}`;
+      renderLobbyPlayers();
+
       network.onPlayerJoined = (p) => {
         const color = PLAYER_COLORS[allPlayers.length % PLAYER_COLORS.length];
-        // Use the game's own createInitialState to get properly-initialized fields
-        // (position, hp, gold, class, etc.) rather than a bare {id,name,color} object.
         const tempState = game.createInitialState([{ id: p.peerId, name: p.name }]);
         const guest = { ...tempState.players[0], color };
         allPlayers.push(guest);
         renderHeaderPlayers();
+        renderLobbyPlayers();
         setHeaderStatus(`${p.name} joined`, 'var(--green)');
         setTimeout(() => setHeaderStatus('Hosting', 'var(--gold)'), 3000);
+
         if (engine?.state) {
+          // Game already running (late joiner) — sync state with their player ID
           engine.state.players.push(guest);
+          engine.forceRender();
           network.sendTo(p.peerId, { type: 'STATE_UPDATE', state: engine.state, yourPlayerId: p.peerId });
           network.broadcast({ type: 'STATE_UPDATE', state: engine.state });
+        } else {
+          // Still in lobby — push updated player list to every connected guest
+          allPlayers.forEach((gp, i) => {
+            if (i === 0) return; // skip host
+            network.sendTo(gp.id, { type: 'LOBBY_UPDATE', players: allPlayers, yourPlayerId: gp.id });
+          });
         }
       };
 
-      startGame(allPlayers);
+      network.onMessage = (msg, fromId) => {
+        if (msg.type === 'ACTION' && engine) {
+          engine._processAction(msg.action);
+        } else if (msg.type === 'CHAT') {
+          appendChat(msg.senderName, msg.text);
+          network.broadcast(msg);
+        }
+      };
 
     } catch(e) {
       setLoading('Failed to create room: ' + e.message);
@@ -179,19 +225,34 @@ async function init() {
 
   } else {
     // Guest
-    setLoading('Waiting for host to start the game…');
-    network.onRetry = () => {}; // message already set; suppress attempt counter
+    setLoading('Connecting to host…');
+    network.onRetry = (attempt, max) => setLoading(`Waiting for host… (${attempt}/${max})`);
     try {
       const myId = await network.joinRoom(roomId, myName);
       myPlayerId = myId;
       setHeaderStatus('Connected · Room ' + roomId.slice(0,8) + '…', 'var(--green)');
 
-      // Show waiting screen until the host's first STATE_UPDATE arrives
+      // Show waiting screen; host will send LOBBY_UPDATE while in pre-game,
+      // or START_GAME / STATE_UPDATE when the game begins.
       document.getElementById('loading-screen').style.display = 'none';
       document.getElementById('guest-waiting').style.display = 'flex';
 
       network.onMessage = (msg, fromId) => {
-        if (msg.type === 'STATE_UPDATE' || msg.type === 'GAME_OVER') {
+        if (msg.type === 'LOBBY_UPDATE') {
+          // Host updated the lobby player list
+          myPlayerId = msg.yourPlayerId;
+          allPlayers = msg.players;
+          renderHeaderPlayers();
+          document.getElementById('guest-lobby-players').innerHTML = msg.players.map((p, i) =>
+            `<span style="font-size:0.82rem;color:${p.color||PLAYER_COLORS[i]};padding:3px 10px;border:1px solid ${(p.color||PLAYER_COLORS[i])}40;border-radius:16px">${p.name}${p.id===myPlayerId?' (you)':''}</span>`
+          ).join('');
+
+        } else if (msg.type === 'START_GAME') {
+          myPlayerId = msg.yourPlayerId || myPlayerId;
+          document.getElementById('guest-waiting').style.display = 'none';
+          startGame(msg.players);
+
+        } else if (msg.type === 'STATE_UPDATE' || msg.type === 'GAME_OVER') {
           if (msg.yourPlayerId) myPlayerId = msg.yourPlayerId;
           if (!engine) {
             document.getElementById('guest-waiting').style.display = 'none';
